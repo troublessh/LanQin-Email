@@ -203,6 +203,7 @@ import { useMe } from "@/hooks/use-me"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useToast } from "@/hooks/use-toast"
 import { hasPermission } from "@/lib/permissions"
+import { showBrowserNotification } from "@/lib/browser-notify"
 
 const folderIcons: Record<string, React.ReactNode> = {
   inbox: <Inbox className="h-4 w-4" />,
@@ -1173,22 +1174,18 @@ export function MailPage() {
     })
     playIncomingMailSound(mailAudioContextRef)
     if ("Notification" in window && Notification.permission === "granted") {
-      try {
-        const notification = new Notification(uiText(title), {
+      // Goes through the service worker where the Notification constructor
+      // is illegal (Chrome on Android); see @/lib/browser-notify. Failures
+      // are swallowed there — the toast above is the primary surface.
+      void showBrowserNotification(
+        uiText(title),
+        {
           body: uiText(description),
           tag: `lanqin-mail-${activeMailboxId}`,
-        })
-        notification.onclick = () => {
-          window.focus()
-          openFirstMessage()
-          notification.close()
-        }
-      } catch {
-        // Some browsers (e.g. Chrome on Android) reject the Notification
-        // constructor and require ServiceWorkerRegistration.showNotification()
-        // instead. The in-page toast above already surfaced the new mail, so a
-        // failed system notification must never break the mail page.
-      }
+          url: window.location.href,
+        },
+        openFirstMessage
+      )
     }
   }, [activeMailboxId, notificationItems, qc, toast])
 

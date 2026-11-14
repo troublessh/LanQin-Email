@@ -8,6 +8,11 @@ import { SiteTitleSync } from "@/components/site-title-sync"
 import { ProtectedLayout } from "@/components/protected-layout"
 import { AdminOnly } from "@/components/admin-only"
 import "./index.css"
+import { installStaleChunkReload } from "@/lib/stale-chunk-reload"
+import { registerMailServiceWorker } from "@/lib/browser-notify"
+
+installStaleChunkReload()
+registerMailServiceWorker()
 
 const LoginPage = React.lazy(() =>
   import("@/pages/login").then((module) => ({ default: module.LoginPage }))
