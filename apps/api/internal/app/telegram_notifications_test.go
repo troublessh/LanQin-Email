@@ -420,3 +420,31 @@ func TestTelegramRequestTimeoutAndNotificationTextLimit(t *testing.T) {
 		t.Fatalf("notification text escaped or lost plain text content: %q", text[:200])
 	}
 }
+
+func TestExtractVerificationCode(t *testing.T) {
+	cases := []struct {
+		name  string
+		texts []string
+		want  string
+	}{
+		{"chinese after keyword", []string{"您的验证码是 123456，5 分钟内有效。"}, "123456"},
+		{"chinese before keyword", []string{"123456 是您的登录验证码，请勿泄露。"}, "123456"},
+		{"english after keyword", []string{"Your verification code is 654321. It expires in 10 minutes."}, "654321"},
+		{"subject otp", []string{"OTP: 042069 for your account"}, "042069"},
+		{"four digit pin code", []string{"Your PIN code is 0420"}, "0420"},
+		{"bare code is", []string{"Your code is 135790"}, "135790"},
+		{"bare code colon", []string{"Login code: 246810"}, "246810"},
+		{"fallback bare six digits with hint", []string{"完成验证", "请输入以下数字完成验证：889900"}, "889900"},
+		{"no code in order mail", []string{"您的订单 20261114 已发货，运单号 771234567890"}, ""},
+		{"amount is not a code", []string{"本月账单金额 1234.56 元，请及时还款。"}, ""},
+		{"year is not a code", []string{"2026 年度报告已发布，欢迎查收。"}, ""},
+		{"empty", []string{""}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractVerificationCode(tc.texts...); got != tc.want {
+				t.Fatalf("extractVerificationCode(%q) = %q, want %q", tc.texts, got, tc.want)
+			}
+		})
+	}
+}

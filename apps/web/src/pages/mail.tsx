@@ -1111,7 +1111,7 @@ export function MailPage() {
         if (ctx.state === "suspended") void ctx.resume()
       }
       if ("Notification" in window && Notification.permission === "default") {
-        void Notification.requestPermission()
+        void Notification.requestPermission().catch(() => undefined)
       }
     }
     window.addEventListener("pointerdown", unlock, { once: true })
@@ -1173,14 +1173,21 @@ export function MailPage() {
     })
     playIncomingMailSound(mailAudioContextRef)
     if ("Notification" in window && Notification.permission === "granted") {
-      const notification = new Notification(uiText(title), {
-        body: uiText(description),
-        tag: `lanqin-mail-${activeMailboxId}`,
-      })
-      notification.onclick = () => {
-        window.focus()
-        openFirstMessage()
-        notification.close()
+      try {
+        const notification = new Notification(uiText(title), {
+          body: uiText(description),
+          tag: `lanqin-mail-${activeMailboxId}`,
+        })
+        notification.onclick = () => {
+          window.focus()
+          openFirstMessage()
+          notification.close()
+        }
+      } catch {
+        // Some browsers (e.g. Chrome on Android) reject the Notification
+        // constructor and require ServiceWorkerRegistration.showNotification()
+        // instead. The in-page toast above already surfaced the new mail, so a
+        // failed system notification must never break the mail page.
       }
     }
   }, [activeMailboxId, notificationItems, qc, toast])

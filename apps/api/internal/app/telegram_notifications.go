@@ -57,6 +57,7 @@ type telegramSettingsRecord struct {
 type telegramNotificationPayload struct {
 	Text string `json:"text"`
 	URL  string `json:"url,omitempty"`
+	Code string `json:"code,omitempty"`
 }
 
 type telegramAPIResponse struct {
@@ -301,16 +302,22 @@ func (a *App) enqueueTelegramNotification(ctx context.Context, userID, mailboxID
 	if !configured {
 		return nil
 	}
-	var mailboxAddress, fromAddress, fromName, subject, snippet string
-	err = a.db.QueryRowContext(ctx, `SELECT mb.address,m.from_addr,COALESCE(m.from_name,''),m.subject,m.snippet
+	var mailboxAddress, fromAddress, fromName, subject, snippet, bodyText string
+	err = a.db.QueryRowContext(ctx, `SELECT mb.address,m.from_addr,COALESCE(m.from_name,''),m.subject,m.snippet,COALESCE(m.body_text,'')
 		FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE m.id=? AND m.mailbox_id=? AND mb.user_id=?`, messageID, mailboxID, userID).
-		Scan(&mailboxAddress, &fromAddress, &fromName, &subject, &snippet)
+		Scan(&mailboxAddress, &fromAddress, &fromName, &subject, &snippet, &bodyText)
 	if err != nil {
 		return err
 	}
+	code := extractVerificationCode(subject, bodyText, snippet)
+	text := telegramNotificationText(mailboxAddress, strings.TrimSpace(fromName+" "+fromAddress), subject, snippet)
+	if code != "" {
+		text += "\n验证码: " + code
+	}
 	payload := telegramNotificationPayload{
-		Text: telegramNotificationText(mailboxAddress, strings.TrimSpace(fromName+" "+fromAddress), subject, snippet),
+		Text: text,
 		URL:  a.telegramMessageURL(mailboxID, messageID),
+		Code: code,
 	}
 	now := a.now().UTC().Format(time.RFC3339Nano)
 	eventKey := "telegram:" + ruleID + ":" + messageID
@@ -334,6 +341,55 @@ func telegramNotificationText(mailbox, from, subject, snippet string) string {
 		text = string(runes[:telegramNotificationTextMaxRunes-3]) + "..."
 	}
 	return text
+}
+
+// Verification-code extraction for Telegram notifications. Only
+// keyword-anchored numeric codes are considered, so ordinary numbers in a
+// message (amounts, dates, tracking numbers) are not mistaken for codes.
+var (
+	verificationCodeKeyword = `(?:验证码|校验码|动态码|安全码|确认码|一次性密码|驗證碼|\bverification(?:\s+code)?\b|\bsecurity\s+code\b|\bpass\s?code\b|\bone[-\s]?time\s+(?:password|code)\b|\bpin\s+code\b|\botp\b)`
+	// Keyword first, code after it: "您的验证码是 123456", "Your verification code is 123456".
+	verificationCodeAfterKeyword = regexp.MustCompile(`(?i)` + verificationCodeKeyword + `[^0-9]{0,30}?([0-9]{4,8})(?:[^0-9]|$)`)
+	// Code first, keyword after it: "123456 是您的验证码", "889900 is your verification code".
+	verificationCodeBeforeKeyword = regexp.MustCompile(`(?:^|[^0-9])([0-9]{4,8})[^0-9]{0,16}?` + `(?i:` + verificationCodeKeyword + `)`)
+	// The bare English word "code" is too ambiguous for the patterns above, so
+	// it only counts with an explicit separator: "code: 123456", "code is 123456".
+	verificationCodeAfterBareCode = regexp.MustCompile(`(?i)\bcode\b\s*(?:[:：]|\bis\b)\s*([0-9]{4,8})(?:[^0-9]|$)`)
+	verificationCodeBare          = regexp.MustCompile(`(?:^|[^0-9])([0-9]{6})(?:[^0-9]|$)`)
+	verificationCodeHint          = regexp.MustCompile(`(?i)(?:验证码|驗證碼|验证|驗證|\bverification\b|\bpass\s?code\b|\botp\b|\bcode\b)`)
+)
+
+// extractVerificationCode returns the first keyword-anchored 4-8 digit code
+// found in the given texts (searched in order), or "" when none looks like a
+// verification code. As a fallback, a standalone 6-digit number is accepted
+// when the text mentions verification at all.
+func extractVerificationCode(texts ...string) string {
+	for _, text := range texts {
+		if match := verificationCodeAfterKeyword.FindStringSubmatch(text); match != nil {
+			return match[1]
+		}
+		if match := verificationCodeBeforeKeyword.FindStringSubmatch(text); match != nil {
+			return match[1]
+		}
+		if match := verificationCodeAfterBareCode.FindStringSubmatch(text); match != nil {
+			return match[1]
+		}
+	}
+	hinted := false
+	for _, text := range texts {
+		if verificationCodeHint.MatchString(text) {
+			hinted = true
+			break
+		}
+	}
+	if hinted {
+		for _, text := range texts {
+			if match := verificationCodeBare.FindStringSubmatch(text); match != nil {
+				return match[1]
+			}
+		}
+	}
+	return ""
 }
 
 func (a *App) telegramMessageURL(mailboxID, messageID string) string {
@@ -491,8 +547,16 @@ func (a *App) deliverTelegramMessage(ctx context.Context, settings telegramSetti
 		"text":                     payload.Text,
 		"disable_web_page_preview": true,
 	}
+	keyboard := [][]map[string]any{}
 	if payload.URL != "" {
-		body["reply_markup"] = map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "打开邮件", "url": payload.URL}}}}
+		keyboard = append(keyboard, []map[string]any{{"text": "打开邮件", "url": payload.URL}})
+	}
+	if payload.Code != "" {
+		// copy_text buttons copy the code to the clipboard with one tap.
+		keyboard = append(keyboard, []map[string]any{{"text": "复制验证码 " + payload.Code, "copy_text": map[string]string{"text": payload.Code}}})
+	}
+	if len(keyboard) > 0 {
+		body["reply_markup"] = map[string]any{"inline_keyboard": keyboard}
 	}
 	_, err = a.callTelegramAPI(ctx, token, "sendMessage", body)
 	return err
